@@ -1,6 +1,6 @@
 package com.github.ericytsang.lib.abstractstream
 
-class BulkOpQueueInputStream(val src:BulkOpQueueOutputStream):AbstractBulkOpInputStream()
+class BulkOpQueueInputStream(val src:BulkOpQueueOutputStream):AbstractInputStream()
 {
     override fun doRead(b:ByteArray,off:Int,len:Int):Int
     {

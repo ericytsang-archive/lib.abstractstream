@@ -10,35 +10,80 @@ import kotlin.concurrent.write
 
 abstract class AbstractOutputStream:OutputStream()
 {
-    final override fun write(b:Int) = writeManager.write(b)
+    final override fun write(b:Int) = state.write(b)
 
-    final override fun write(b:ByteArray) = super.write(b)
+    final override fun write(b:ByteArray) = write(b,0,b.size)
 
-    final override fun write(b:ByteArray,off:Int,len:Int) = super.write(b,off,len)
+    final override fun write(b:ByteArray,off:Int,len:Int) = state.write(b,off,len)
 
     final override fun close() = closeManager.close()
 
-    val isClosed:Boolean get() = state is Closed
+    /**
+     * executes function, passing it a reference to the [Thread] that is
+     * currently executing [doRead].
+     */
+    protected fun <R> useActiveThread(block:(Thread?)->R):R
+    {
+        return threadManager.useThread(block)
+    }
 
-    protected abstract fun doWrite(b:Int)
+    /**
+     * reference to the [Thread] that is currently executing [doRead].
+     */
+    protected val activeThread:Thread? get() = threadManager.thread
+
+    /**
+     * true if [setClosed] was called; false otherwise.
+     */
+    protected val isClosed:Boolean get() = state is Closed
+
+    /**
+     * guaranteed that calls to this method are mutually exclusive. should be
+     * implemented in a way that when [doClose] is called, the thread currently
+     * executing this method would return immediately.
+     *
+     * @param b [Int] whose least significant byte will be sent.
+     */
+    protected open fun doWrite(b:Int)
+    {
+        writeManager.delegateWrite(b)
+    }
+
+    /**
+     * guaranteed that calls to this method are mutually exclusive.
+     *
+     * guaranteed that calls to this method are mutually exclusive. should be
+     * implemented in a way that when [doClose] is called, the thread currently
+     * executing this method would return immediately.
+     *
+     * @param b [ByteArray] of data that will be sent from.
+     * @param off specifies a starting index in [b].
+     * @param len specifies an ending index in [b].
+     */
+    protected open fun doWrite(b:ByteArray,off:Int,len:Int)
+    {
+        super.write(b,off,len)
+    }
 
     /**
      * guaranteed to only be called once.
      *
-     * when implementing, either do not override or override and do all of the
-     * following:
-     * - release resources held by the stream
-     * - immediately cause threads executing [doWrite] to throw an exception
-     * - call [setClosed]
+     * must be implemented to call either [doNothing] or [setClosed] exactly one
+     * time before returning.
      */
     protected open fun doClose():Unit = doNothing()
 
     /**
-     * all subsequent calls to [write] will no longer be delegated to [doWrite]
-     * and shall throw an [IOException].
+     * once [setClosed] returns, all subsequent calls to [read] will no longer
+     * be delegated to [doWrite] and shall indicate EOF.
      */
     protected fun setClosed() = closeManager.setClosed()
 
+    /**
+     * acknowledges that the [doClose] method is a nop implementation that does
+     * not release stream resources. subsequent calls to [read] will still be
+     * delegated to [doWrite].
+     */
     protected fun doNothing() = closeManager.doNothing()
 
     private var state:State = Opened()
@@ -46,15 +91,24 @@ abstract class AbstractOutputStream:OutputStream()
     private interface State
     {
         fun write(b:Int)
+        fun write(b:ByteArray,off:Int,len:Int)
     }
 
     private inner class Opened:State
     {
-        override fun write(b:Int)
+        override fun write(b:Int) = synchronized(this)
         {
             threadManager.setThread {
                 threadManager.useThread {
                     doWrite(b)
+                }
+            }
+        }
+        override fun write(b:ByteArray,off:Int,len:Int) = synchronized(this)
+        {
+            threadManager.setThread {
+                threadManager.useThread {
+                    doWrite(b,off,len)
                 }
             }
         }
@@ -63,13 +117,16 @@ abstract class AbstractOutputStream:OutputStream()
     private inner class Closed:State
     {
         override fun write(b:Int) = throw IOException("stream closed; cannot write.")
+        override fun write(b:ByteArray,off:Int,len:Int) = throw IOException("stream closed; cannot write.")
     }
 
     private val writeManager = object
     {
-        fun write(b:Int):Unit = synchronized(this)
+        private val singleElementByteArray = byteArrayOf(0)
+        fun delegateWrite(b:Int)
         {
-            state.write(b)
+            singleElementByteArray[0] = b.toByte()
+            write(singleElementByteArray,0,1)
         }
     }
 

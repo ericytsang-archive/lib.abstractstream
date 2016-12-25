@@ -2,7 +2,7 @@ package com.github.ericytsang.lib.abstractstream
 
 import java.util.concurrent.LinkedBlockingQueue
 
-class BulkOpQueueOutputStream:AbstractBulkOpOutputStream()
+class BulkOpQueueOutputStream:AbstractOutputStream()
 {
     private val buffer = LinkedBlockingQueue<Byte>()
     override fun doWrite(b:ByteArray,off:Int,len:Int)
