@@ -1,41 +1,36 @@
 package com.github.ericytsang.lib.abstractstream
 
+import com.github.ericytsang.lib.onlysetonce.OnlySetOnce
 import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.locks.ReentrantLock
-import java.util.concurrent.locks.ReentrantReadWriteLock
-import kotlin.concurrent.read
 import kotlin.concurrent.withLock
-import kotlin.concurrent.write
 
 abstract class AbstractInputStream:InputStream()
 {
-    final override fun read():Int = state.read()
+    final override fun read():Int = readMutex.withLock {doRead()}
 
-    final override fun read(b:ByteArray):Int = read(b,0,b.size)
+    final override fun read(b:ByteArray):Int = readMutex.withLock {doRead(b,0,b.size)}
 
-    final override fun read(b:ByteArray,off:Int,len:Int):Int = state.read(b,off,len)
+    final override fun read(b:ByteArray,off:Int,len:Int):Int = readMutex.withLock {doRead(b,off,len)}
 
-    final override fun close() = closeManager.close()
-
-    /**
-     * executes function, passing it a reference to the [Thread] that is
-     * currently executing [doRead].
-     */
-    protected fun <R> useActiveThread(block:(Thread?)->R):R
+    final override fun close()
     {
-        return threadManager.useThread(block)
+        try
+        {
+            closeStackTrace = Thread.currentThread().stackTrace
+            oneShotClose()
+        }
+        catch (ex:OnlySetOnce.Exception)
+        {
+            // ignore subsequent calls to close.
+        }
     }
 
-    /**
-     * reference to the [Thread] that is currently executing [doRead].
-     */
-    protected val activeThread:Thread? get() = threadManager.thread
+    var closeStackTrace:Array<StackTraceElement>? by OnlySetOnce()
+        private set
 
-    /**
-     * true if [setClosed] was called; false otherwise.
-     */
-    protected val isClosed:Boolean get() = state is Closed
+    private val readMutex = ReentrantLock()
 
     /**
      * guaranteed that calls to this method are mutually exclusive.
@@ -91,136 +86,6 @@ abstract class AbstractInputStream:InputStream()
 
     /**
      * guaranteed to only be called once.
-     *
-     * must be implemented to call either [doNothing] or [setClosed] exactly one
-     * time before returning.
      */
-    protected open fun doClose():Unit = doNothing()
-
-    /**
-     * once [setClosed] returns, all subsequent calls to [read] will no longer
-     * be delegated to [doRead] and shall throw an [IOException].
-     */
-    protected fun setClosed() = closeManager.setClosed()
-
-    /**
-     * acknowledges that the [doClose] method is a nop implementation that does
-     * not release stream resources. subsequent calls to [read] will still be
-     * delegated to [doRead].
-     */
-    protected fun doNothing() = closeManager.doNothing()
-
-    private var state:State = Opened()
-
-    private interface State
-    {
-        fun read():Int
-        fun read(b:ByteArray,off:Int,len:Int):Int
-    }
-
-    private inner class Opened:State
-    {
-        override fun read():Int = synchronized(this)
-        {
-            val readResult = threadManager.setThread {
-                threadManager.useThread {
-                    doRead()
-                }
-            }
-            if (readResult == -1)
-            {
-                close()
-            }
-            return readResult
-        }
-        override fun read(b:ByteArray,off:Int,len:Int):Int = synchronized(this)
-        {
-            val readResult = threadManager.setThread {
-                threadManager.useThread {
-                    doRead(b,off,len)
-                }
-            }
-            if (readResult == -1)
-            {
-                close()
-            }
-            return readResult
-        }
-    }
-
-    private inner class Closed:State
-    {
-        override fun read():Int = -1
-        override fun read(b:ByteArray,off:Int,len:Int):Int = -1
-    }
-
-    private val threadManager = object
-    {
-        private val lock = ReentrantReadWriteLock()
-        var thread:Thread? = null
-        fun <R> setThread(b:()->R):R
-        {
-            lock.write {
-                thread = Thread.currentThread()
-            }
-            try
-            {
-                return b()
-            }
-            finally
-            {
-                lock.write {
-                    thread = null
-                }
-            }
-        }
-        fun <R> useThread(b:(Thread?)->R):R
-        {
-            return lock.read {
-                b(thread)
-            }
-        }
-    }
-
-    private val closeManager = object
-    {
-        private val closeLock = ReentrantLock()
-        private var firstCall = true
-        private var actionCount = 0
-        fun close() = closeLock.withLock()
-        {
-            if (firstCall)
-            {
-                firstCall = false
-                actionCount = 0
-                threadManager.useThread {
-                    doClose()
-                }
-                require(actionCount == 1)
-                {
-                    "implementation of doClose must call either setClosed or doNothing exactly once before returning"
-                }
-            }
-        }
-        fun setClosed()
-        {
-            checkCall()
-            state = Closed()
-        }
-        fun doNothing()
-        {
-            checkCall()
-        }
-        private fun checkCall()
-        {
-            require(closeLock.isHeldByCurrentThread)
-            {
-                "method must be called by the same thread that executes the doClose method"
-            }
-            require(actionCount++ == 0)
-            {
-                "implementation of doClose must call either setClosed or doNothing exactly once before returning"
-            }
-        }
-    }
+    protected open fun oneShotClose() = Unit
 }

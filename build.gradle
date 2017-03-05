@@ -2,7 +2,7 @@ group 'com.github.ericytsang'
 version '1.0.0'
 
 buildscript {
-    ext.kotlin_version = '1.0.5-3'
+    ext.kotlin_version = '1.1.0'
     repositories {
         mavenCentral()
     }
@@ -26,6 +26,7 @@ repositories {
 }
 
 dependencies {
+    compile "com.github.ericytsang:lib.onlysetonce:2.0.0"
     compile "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     testCompile "junit:junit:4.11"
     testCompile "org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version"

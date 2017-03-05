@@ -10,7 +10,7 @@ import java.io.OutputStream
 import java.util.Arrays
 import kotlin.concurrent.thread
 
-abstract class StreamTest()
+abstract class StreamTest
 {
     abstract val src:OutputStream
     abstract val sink:InputStream
@@ -90,6 +90,8 @@ abstract class StreamTest()
         src.write(254)
         src.write(255)
         src.close()
+        src.close()
+        src.close()
         assert(sink.read() == 0)
         assert(sink.read() == 2)
         assert(sink.read() == 5)
@@ -119,6 +121,8 @@ abstract class StreamTest()
         src.write(255)
         thread {
             Thread.sleep(500)
+            src.close()
+            src.close()
             src.close()
         }
         assert(sink.read() == 0)

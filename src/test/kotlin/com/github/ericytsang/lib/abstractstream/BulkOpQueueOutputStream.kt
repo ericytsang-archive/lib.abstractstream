@@ -49,9 +49,10 @@ class BulkOpQueueOutputStream:AbstractOutputStream()
             readThread = null
         }
     }
-    override fun doClose()
+    var closeCount = 0
+    override fun oneShotClose()
     {
-        setClosed()
+        check(closeCount++ == 0)
         readThread?.interrupt()
     }
 }

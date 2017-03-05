@@ -1,41 +1,37 @@
 package com.github.ericytsang.lib.abstractstream
 
-import java.io.IOException
+import com.github.ericytsang.lib.onlysetonce.OnlySetOnce
 import java.io.OutputStream
 import java.util.concurrent.locks.ReentrantLock
-import java.util.concurrent.locks.ReentrantReadWriteLock
-import kotlin.concurrent.read
 import kotlin.concurrent.withLock
-import kotlin.concurrent.write
 
 abstract class AbstractOutputStream:OutputStream()
 {
-    final override fun write(b:Int) = state.write(b)
+    final override fun write(b:Int) = writeMutex.withLock {doWrite(b)}
 
-    final override fun write(b:ByteArray) = write(b,0,b.size)
+    final override fun write(b:ByteArray) = writeMutex.withLock {doWrite(b,0,b.size)}
 
-    final override fun write(b:ByteArray,off:Int,len:Int) = state.write(b,off,len)
+    final override fun write(b:ByteArray,off:Int,len:Int) = writeMutex.withLock {doWrite(b,off,len)}
 
-    final override fun close() = closeManager.close()
-
-    /**
-     * executes function, passing it a reference to the [Thread] that is
-     * currently executing [doRead].
-     */
-    protected fun <R> useActiveThread(block:(Thread?)->R):R
+    final override fun close()
     {
-        return threadManager.useThread(block)
+        try
+        {
+            closeStackTrace = Thread.currentThread().stackTrace
+            oneShotClose()
+        }
+        catch (ex:OnlySetOnce.Exception)
+        {
+            // ignore subsequent calls to close.
+        }
     }
 
-    /**
-     * reference to the [Thread] that is currently executing [doRead].
-     */
-    protected val activeThread:Thread? get() = threadManager.thread
+    val isClosed get() = closeStackTrace != null
 
-    /**
-     * true if [setClosed] was called; false otherwise.
-     */
-    protected val isClosed:Boolean get() = state is Closed
+    var closeStackTrace:Array<StackTraceElement>? by OnlySetOnce()
+        private set
+
+    private val writeMutex = ReentrantLock()
 
     /**
      * guaranteed that calls to this method are mutually exclusive. should be
@@ -67,58 +63,8 @@ abstract class AbstractOutputStream:OutputStream()
 
     /**
      * guaranteed to only be called once.
-     *
-     * must be implemented to call either [doNothing] or [setClosed] exactly one
-     * time before returning.
      */
-    protected open fun doClose():Unit = doNothing()
-
-    /**
-     * once [setClosed] returns, all subsequent calls to [read] will no longer
-     * be delegated to [doWrite] and shall indicate EOF.
-     */
-    protected fun setClosed() = closeManager.setClosed()
-
-    /**
-     * acknowledges that the [doClose] method is a nop implementation that does
-     * not release stream resources. subsequent calls to [read] will still be
-     * delegated to [doWrite].
-     */
-    protected fun doNothing() = closeManager.doNothing()
-
-    private var state:State = Opened()
-
-    private interface State
-    {
-        fun write(b:Int)
-        fun write(b:ByteArray,off:Int,len:Int)
-    }
-
-    private inner class Opened:State
-    {
-        override fun write(b:Int) = synchronized(this)
-        {
-            threadManager.setThread {
-                threadManager.useThread {
-                    doWrite(b)
-                }
-            }
-        }
-        override fun write(b:ByteArray,off:Int,len:Int) = synchronized(this)
-        {
-            threadManager.setThread {
-                threadManager.useThread {
-                    doWrite(b,off,len)
-                }
-            }
-        }
-    }
-
-    private inner class Closed:State
-    {
-        override fun write(b:Int) = throw IOException("stream closed; cannot write.")
-        override fun write(b:ByteArray,off:Int,len:Int) = throw IOException("stream closed; cannot write.")
-    }
+    protected open fun oneShotClose() = Unit
 
     private val writeManager = object
     {
@@ -127,76 +73,6 @@ abstract class AbstractOutputStream:OutputStream()
         {
             singleElementByteArray[0] = b.toByte()
             write(singleElementByteArray,0,1)
-        }
-    }
-
-    private val threadManager = object
-    {
-        private val lock = ReentrantReadWriteLock()
-        var thread:Thread? = null
-        fun <R> setThread(b:()->R):R
-        {
-            lock.write {
-                thread = Thread.currentThread()
-            }
-            try
-            {
-                return b()
-            }
-            finally
-            {
-                lock.write {
-                    thread = null
-                }
-            }
-        }
-        fun <R> useThread(b:(Thread)->R):R
-        {
-            return lock.read {
-                b(Thread.currentThread())
-            }
-        }
-    }
-
-    private val closeManager = object
-    {
-        private val closeLock = ReentrantLock()
-        private var firstCall = true
-        private var actionCount = 0
-        fun close() = closeLock.withLock()
-        {
-            if (firstCall)
-            {
-                firstCall = false
-                actionCount = 0
-                threadManager.useThread {
-                    doClose()
-                }
-                require(actionCount == 1)
-                {
-                    "implementation of doClose must call either setClosed or doNothing exactly once before returning"
-                }
-            }
-        }
-        fun setClosed()
-        {
-            checkCall()
-            state = Closed()
-        }
-        fun doNothing()
-        {
-            checkCall()
-        }
-        private fun checkCall()
-        {
-            require(closeLock.isHeldByCurrentThread)
-            {
-                "method must be called by the same thread that executes the doClose method"
-            }
-            require(actionCount++ == 0)
-            {
-                "implementation of doClose must call either setClosed or doNothing exactly once before returning"
-            }
         }
     }
 }
